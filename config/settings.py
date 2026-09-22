@@ -48,6 +48,7 @@ INSTALLED_APPS = [
 
     "clientes.apps.ClientesConfig",
     "conversas.apps.ConversasConfig",
+    "atendimentos.apps.AtendimentosConfig",
 ]
 
 MIDDLEWARE = [
