@@ -38,11 +38,13 @@ class Veiculo(models.Model):
         related_name="veiculos"
     )
 
-    # placa = models.CharField(
-    #     max_length=10,
-    #     unique=True
-    # )
-    
+    placa = models.CharField(
+        max_length=10,
+        unique=True,
+        null=True,
+        blank=True,
+    )
+
     marca = models.CharField(
         max_length=50,
         blank=True

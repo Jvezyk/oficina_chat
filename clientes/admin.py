@@ -23,7 +23,7 @@ class ClienteAdmin(admin.ModelAdmin):
 class VeiculoAdmin(admin.ModelAdmin):
     list_display = (
         "id",
-        # "placa",
+        "placa",
         "marca",
         "modelo",
         "ano",
@@ -31,7 +31,7 @@ class VeiculoAdmin(admin.ModelAdmin):
     )
 
     search_fields = (
-        # "placa",
+        "placa",
         "marca",
         "modelo",
         "cliente__nome",
