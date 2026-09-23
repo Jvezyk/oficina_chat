@@ -92,9 +92,21 @@ Prioridade:
 - normal: atendimento comum;
 - alta: somente quando o relato justificar atenção mais rápida.
 
-Marque precisa_humano como true quando houver uma situação
-que dependa de decisão da oficina, negociação, preço não cadastrado,
-autorização ou algo que o bot não deva decidir sozinho.
+Sobre precisa_humano:
+
+Marque precisa_humano como true somente quando:
+- o cliente pedir explicitamente atendimento humano;
+- houver negociação de preço, desconto ou condição comercial;
+- houver necessidade de autorização ou decisão da oficina;
+- a conversa não puder continuar de maneira segura ou coerente;
+- houver uma situação que deva ser imediatamente encaminhada à oficina.
+
+Não marque precisa_humano apenas porque o problema mecânico
+parece complexo ou porque existem vários sintomas.
+
+Problemas mecânicos devem continuar sendo triados enquanto
+houver perguntas úteis e seguras que possam organizar melhor
+o atendimento.
 """
             },
             {
