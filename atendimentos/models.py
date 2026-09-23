@@ -33,6 +33,15 @@ class Atendimento(models.Model):
         ORCAMENTO = "orcamento", "Orçamento"
         OUTRO = "outro", "Outro"
 
+    class Intencao(models.TextChoices):
+        SOLICITAR_SERVICO = "solicitar_servico", "Solicitar serviço"
+        SOLICITAR_ORCAMENTO = "solicitar_orcamento", "Solicitar orçamento"
+        AGENDAR = "agendar", "Agendar"
+        CONSULTAR_STATUS = "consultar_status", "Consultar status"
+        DUVIDA = "duvida", "Dúvida"
+        FALAR_COM_HUMANO = "falar_com_humano", "Falar com humano"
+        OUTRO = "outro", "Outro"
+
     cliente = models.ForeignKey(
         Cliente,
         on_delete=models.PROTECT,
@@ -61,11 +70,28 @@ class Atendimento(models.Model):
         default=Categoria.OUTRO,
     )
 
-    relato_cliente = models.TextField(
-        blank=True,
+    intencao = models.CharField(
+        max_length=30,
+        choices=Intencao.choices,
+        default=Intencao.OUTRO,
     )
 
     resumo = models.TextField(
+        blank=True,
+    )
+
+    sintomas = models.JSONField(
+        default=list,
+        blank=True,
+    )
+
+    condicoes = models.JSONField(
+        default=list,
+        blank=True,
+    )
+
+    tempo_problema = models.CharField(
+        max_length=150,
         blank=True,
     )
 
