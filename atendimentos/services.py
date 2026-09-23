@@ -121,9 +121,15 @@ def identificar_veiculo(cliente, analise):
     # 3. Se o cliente só possui um veículo
     # ---------------------------------------------------------
 
-    if len(veiculos) == 1:
+
+    if (
+        len(veiculos) == 1
+        and not analise.veiculo_mencionado
+        and not analise.placa_mencionada
+    ):
         return veiculos[0]
 
+    return None
     # ---------------------------------------------------------
     # Não foi possível determinar com segurança
     # ---------------------------------------------------------
