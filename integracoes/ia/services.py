@@ -1,6 +1,7 @@
 import os
 from openai import OpenAI
 from .schemas import AnaliseAtendimento
+from django.utils import timezone
 
 
 client = OpenAI(
@@ -36,6 +37,7 @@ def montar_historico(conversa):
 def analisar_conversa(conversa):
     historico = montar_historico(conversa)
 
+    data_atual = timezone.localdate()
     resposta = client.responses.parse(
         model=os.getenv("OPENAI_MODEL"),
 
@@ -108,6 +110,113 @@ Estilo de conversa:
 - Considere o histórico da conversa para evitar repetir frases,
   cumprimentos ou perguntas que já foram feitas.
 
+    DATA ATUAL:
+    {data_atual.isoformat()}
+
+    Use essa data apenas para interpretar expressões relativas
+    como hoje, amanhã e dias da semana.
+
+AGENDAMENTO:
+
+- A intenção "agendar" significa que o cliente deseja levar
+  o veículo à oficina em uma data, horário ou período.
+
+- A IA NUNCA deve calcular datas de calendário.
+- A IA NUNCA deve transformar "amanhã", "sexta", "segunda" etc.
+  em uma data YYYY-MM-DD.
+- A IA apenas classifica o que o cliente informou.
+- Nunca afirme que existe disponibilidade.
+- Nunca confirme um horário.
+
+TIPO DE DATA:
+
+Se o cliente disser "hoje":
+tipo_data_agendamento = "hoje"
+
+Se disser "amanhã":
+tipo_data_agendamento = "amanha"
+
+Se disser "depois de amanhã":
+tipo_data_agendamento = "depois_amanha"
+
+Se disser um dia da semana, por exemplo "sexta":
+tipo_data_agendamento = "dia_semana"
+dia_semana_agendamento = "sexta"
+
+Se informar explicitamente uma data, por exemplo "30/09/2026":
+tipo_data_agendamento = "data_explicita"
+data_explicita_agendamento = "30/09/2026"
+
+IMPORTANTE:
+
+- data_explicita_agendamento só pode ser preenchida quando o próprio
+  cliente fornecer explicitamente uma data numérica.
+- Nunca invente data_explicita_agendamento.
+- Para "hoje", "amanhã", "sexta", etc.,
+  data_explicita_agendamento deve ser null.
+- Para "amanhã":
+  tipo_data_agendamento = "amanha"
+  dia_semana_agendamento = null
+  data_explicita_agendamento = null
+
+HORÁRIO:
+
+- "às 10h" -> horario_agendamento_mencionado = "10:00"
+- "às 14:30" -> horario_agendamento_mencionado = "14:30"
+- Se não houver horário exato, retorne null.
+
+PERÍODO:
+
+- "de manhã" -> "manha"
+- "à tarde" -> "tarde"
+- "à noite" -> "noite"
+- Se não houver período, retorne null.
+     
+    ATUALIZAÇÃO DE PREFERÊNCIAS DE AGENDAMENTO:
+    - Considere sempre a preferência MAIS RECENTE informada pelo cliente.
+
+    - Quando o cliente corrigir, alterar ou substituir uma preferência
+    anterior, os dados anteriores deixam de representar a preferência atual.
+
+    Exemplo:
+
+    Cliente:
+    "Quero levar amanhã às 10h."
+
+    Depois:
+    "Na verdade prefiro sexta à tarde."
+
+    Resultado atual deve ser:
+
+    tipo_data_agendamento = "dia_semana"
+    dia_semana_agendamento = "sexta"
+    data_explicita_agendamento = null
+    horario_agendamento_mencionado = null
+    periodo_agendamento_mencionado = "tarde"
+
+    NÃO mantenha "10:00", pois o cliente substituiu a preferência anterior.
+
+    Outro exemplo:
+
+    Cliente:
+    "Prefiro sexta de manhã."
+
+    Depois:
+    "Pensando melhor, pode ser às 14h."
+
+    Resultado atual:
+
+    horario_agendamento_mencionado = "14:00"
+    periodo_agendamento_mencionado = null
+
+    - Expressões como "na verdade", "pensando melhor", "melhor", "prefiro",
+    "pode ser", "troca para", "quero mudar" indicam que a preferência
+    mais recente pode substituir a anterior.
+
+    - Não combine uma preferência antiga com uma nova se o cliente
+    claramente estiver alterando o pedido.
+
+  
 Prioridade:
 - baixa: atendimento sem urgência relatada;
 - normal: atendimento comum;
