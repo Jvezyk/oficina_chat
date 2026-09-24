@@ -2,6 +2,7 @@ from django.db import transaction
 
 from atendimentos.models import Atendimento
 from atendimentos.services import processar_conversa
+from clientes.services import obter_ou_criar_veiculo
 from conversas.models import Mensagem
 
 
@@ -23,27 +24,81 @@ def salvar_mensagem(
     )
 
 
+def gerar_pergunta_veiculo(cliente, analise):
+    """
+    Define qual pergunta deve ser feita para identificar
+    corretamente o veículo relacionado ao atendimento.
+    """
+
+    veiculos = list(cliente.veiculos.all())
+
+    # A IA identificou um veículo
+    if analise.veiculo_mencionado:
+
+        # Sabemos o veículo, mas ainda não sabemos a placa
+        if not analise.placa_mencionada:
+            return (
+                f"Certo, é um {analise.veiculo_mencionado}. "
+                "Pode me informar a placa do veículo?"
+            )
+
+        # Temos veículo e placa, mas ele ainda não foi
+        # vinculado ao atendimento
+        return (
+            f"Entendi. Você informou um "
+            f"{analise.veiculo_mencionado}, "
+            f"placa {analise.placa_mencionada}. "
+            "Ainda preciso validar esse veículo no cadastro."
+        )
+
+    # Cliente não possui veículo cadastrado
+    if len(veiculos) == 0:
+        return (
+            "Para eu registrar corretamente o atendimento, "
+            "qual é o modelo, o ano e a placa do veículo?"
+        )
+
+    # Cliente possui vários veículos
+    if len(veiculos) > 1:
+
+        opcoes = []
+
+        for veiculo in veiculos:
+            descricao = f"{veiculo.marca} {veiculo.modelo}".strip()
+
+            if veiculo.ano:
+                descricao += f" {veiculo.ano}"
+
+            if veiculo.placa:
+                descricao += f" - {veiculo.placa}"
+
+            opcoes.append(descricao)
+
+        lista_veiculos = ", ".join(opcoes)
+
+        return (
+            "Para eu registrar corretamente, "
+            f"é sobre qual veículo: {lista_veiculos}?"
+        )
+
+    return None
+
+
 @transaction.atomic
 def processar_mensagem_cliente(conversa, conteudo):
     """
     Processa uma nova mensagem enviada pelo cliente.
 
     Fluxo:
-        1. Salva mensagem do cliente
-        2. Analisa a conversa inteira
-        3. Cria/atualiza Atendimento
-        4. Decide se precisa fazer outra pergunta
-        5. Salva a resposta do bot
-
-    Retorna:
-        atendimento
-        analise
-        mensagem_cliente
-        mensagem_bot
+    1. Salva mensagem
+    2. Analisa conversa
+    3. Cria/atualiza atendimento
+    4. Tenta identificar ou cadastrar veículo
+    5. Decide a próxima resposta
     """
 
     # ---------------------------------------------------------
-    # 1. Salvar a mensagem recebida
+    # 1. Salvar mensagem do cliente
     # ---------------------------------------------------------
 
     mensagem_cliente = salvar_mensagem(
@@ -53,29 +108,83 @@ def processar_mensagem_cliente(conversa, conteudo):
     )
 
     # ---------------------------------------------------------
-    # 2. IA analisa conversa e Atendimento é atualizado
+    # 2. IA analisa conversa e atualiza atendimento
     # ---------------------------------------------------------
 
     atendimento, analise = processar_conversa(
         conversa
     )
 
+    # ---------------------------------------------------------
+    # 3. Tentar identificar ou cadastrar veículo
+    # ---------------------------------------------------------
+
+    situacao_veiculo = None
+
+    if atendimento.veiculo is None:
+
+        veiculo, situacao_veiculo = obter_ou_criar_veiculo(
+            cliente=conversa.cliente,
+            analise=analise,
+        )
+
+        if veiculo is not None:
+
+            atendimento.veiculo = veiculo
+
+            atendimento.save(
+                update_fields=[
+                    "veiculo",
+                    "atualizado_em",
+                ]
+            )
+
+    # ---------------------------------------------------------
+    # 4. Se ainda não temos veículo, descobrir o que perguntar
+    # ---------------------------------------------------------
+
     pergunta_veiculo = None
 
     if atendimento.veiculo is None:
+
         pergunta_veiculo = gerar_pergunta_veiculo(
             cliente=conversa.cliente,
             analise=analise,
         )
-    
 
     mensagem_bot = None
 
     # ---------------------------------------------------------
-    # 3. Situação precisa de uma pessoa
+    # 5. Placa inválida
     # ---------------------------------------------------------
 
-    if analise.precisa_humano:
+    if situacao_veiculo == "placa_invalida":
+
+        atendimento.status = (
+            Atendimento.Status.COLETANDO_DADOS
+        )
+
+        atendimento.save(
+            update_fields=[
+                "status",
+                "atualizado_em",
+            ]
+        )
+
+        mensagem_bot = salvar_mensagem(
+            conversa=conversa,
+            remetente=Mensagem.Remetente.BOT,
+            conteudo=(
+                "Não consegui identificar essa placa. "
+                "Pode conferir e me informar novamente?"
+            ),
+        )
+
+    # ---------------------------------------------------------
+    # 6. Placa pertence a outro cliente
+    # ---------------------------------------------------------
+
+    elif situacao_veiculo == "conflito":
 
         atendimento.status = (
             Atendimento.Status.AGUARDANDO_OFICINA
@@ -99,19 +208,55 @@ def processar_mensagem_cliente(conversa, conteudo):
             ]
         )
 
-        resposta = (
-            "Entendi. Vou encaminhar sua solicitação "
-            "para um responsável da oficina."
+        mensagem_bot = salvar_mensagem(
+            conversa=conversa,
+            remetente=Mensagem.Remetente.BOT,
+            conteudo=(
+                "Encontrei uma inconsistência no cadastro "
+                "desse veículo. Vou encaminhar para um "
+                "responsável da oficina verificar."
+            ),
+        )
+
+    # ---------------------------------------------------------
+    # 7. IA determinou necessidade de humano
+    # ---------------------------------------------------------
+
+    elif analise.precisa_humano:
+
+        atendimento.status = (
+            Atendimento.Status.AGUARDANDO_OFICINA
+        )
+
+        atendimento.save(
+            update_fields=[
+                "status",
+                "atualizado_em",
+            ]
+        )
+
+        conversa.status = (
+            conversa.Status.AGUARDANDO_HUMANO
+        )
+
+        conversa.save(
+            update_fields=[
+                "status",
+                "atualizada_em",
+            ]
         )
 
         mensagem_bot = salvar_mensagem(
             conversa=conversa,
             remetente=Mensagem.Remetente.BOT,
-            conteudo=resposta,
+            conteudo=(
+                "Entendi. Vou encaminhar sua solicitação "
+                "para um responsável da oficina."
+            ),
         )
 
     # ---------------------------------------------------------
-    # 4. Ainda faltam informações
+    # 8. Ainda falta identificar veículo
     # ---------------------------------------------------------
 
     elif pergunta_veiculo:
@@ -131,8 +276,11 @@ def processar_mensagem_cliente(conversa, conteudo):
             conversa=conversa,
             remetente=Mensagem.Remetente.BOT,
             conteudo=pergunta_veiculo,
-    )
+        )
 
+    # ---------------------------------------------------------
+    # 9. Ainda faltam dados técnicos
+    # ---------------------------------------------------------
 
     elif not analise.dados_suficientes:
 
@@ -156,7 +304,7 @@ def processar_mensagem_cliente(conversa, conteudo):
             )
 
     # ---------------------------------------------------------
-    # 5. Triagem concluída
+    # 10. Triagem concluída
     # ---------------------------------------------------------
 
     else:
@@ -172,19 +320,17 @@ def processar_mensagem_cliente(conversa, conteudo):
             ]
         )
 
-        resposta = (
-            "Perfeito! Já registrei as informações "
-            "do seu atendimento para a oficina."
-        )
-
         mensagem_bot = salvar_mensagem(
             conversa=conversa,
             remetente=Mensagem.Remetente.BOT,
-            conteudo=resposta,
+            conteudo=(
+                "Perfeito! Já registrei as informações "
+                "do seu atendimento para a oficina."
+            ),
         )
 
     # ---------------------------------------------------------
-    # 6. Retorno
+    # 11. Retorno
     # ---------------------------------------------------------
 
     return {
@@ -192,92 +338,5 @@ def processar_mensagem_cliente(conversa, conteudo):
         "analise": analise,
         "mensagem_cliente": mensagem_cliente,
         "mensagem_bot": mensagem_bot,
+        "situacao_veiculo": situacao_veiculo,
     }
-
-def gerar_pergunta_veiculo(cliente, analise):
-    """
-    Define qual pergunta deve ser feita para identificar
-    corretamente o veículo relacionado ao atendimento.
-
-    Regras:
-    - Se a IA mencionou um veículo, mas ele ainda não foi
-      vinculado ao atendimento, pedimos a placa.
-    - Se a IA já mencionou veículo e placa, mas o veículo
-      não existe no cadastro, informamos que ele precisa
-      ser cadastrado.
-    - Se o cliente não possui veículos cadastrados,
-      perguntamos modelo e ano.
-    - Se possui vários veículos, pedimos para escolher.
-    - Se possui apenas um veículo e nada foi mencionado,
-      não é necessário perguntar.
-    """
-
-    veiculos = list(cliente.veiculos.all())
-
-    # ---------------------------------------------------------
-    # 1. A IA identificou um veículo na conversa
-    # ---------------------------------------------------------
-
-    if analise.veiculo_mencionado:
-
-        # Sabemos o veículo, mas ainda não sabemos a placa
-        if not analise.placa_mencionada:
-            return (
-                f"Certo, é um {analise.veiculo_mencionado}. "
-                "Pode me informar a placa do veículo?"
-            )
-
-        # Temos veículo + placa, mas ele ainda não foi
-        # encontrado/vinculado no cadastro.
-        return (
-            f"Entendi. Você informou um "
-            f"{analise.veiculo_mencionado}, "
-            f"placa {analise.placa_mencionada}. "
-            "Esse veículo ainda não está cadastrado no sistema."
-        )
-
-    # ---------------------------------------------------------
-    # 2. Cliente ainda não possui veículo cadastrado
-    # ---------------------------------------------------------
-
-    if len(veiculos) == 0:
-        return (
-            "Para eu registrar corretamente o atendimento, "
-            "qual é o modelo, o ano e a placa do veículo?"
-        )
-
-    # ---------------------------------------------------------
-    # 3. Cliente possui vários veículos cadastrados
-    # ---------------------------------------------------------
-
-    if len(veiculos) > 1:
-
-        opcoes = []
-
-        for veiculo in veiculos:
-            descricao = f"{veiculo.marca} {veiculo.modelo}"
-
-            if veiculo.ano:
-                descricao += f" {veiculo.ano}"
-
-            if veiculo.placa:
-                descricao += f" - {veiculo.placa}"
-
-            opcoes.append(descricao)
-
-        lista_veiculos = ", ".join(opcoes)
-
-        return (
-            "Para eu registrar corretamente, "
-            f"é sobre qual veículo: {lista_veiculos}?"
-        )
-
-    # ---------------------------------------------------------
-    # 4. Cliente possui apenas um veículo cadastrado
-    # ---------------------------------------------------------
-
-    # Nesse caso não precisamos perguntar nada.
-    # O identificar_veiculo() pode usar esse veículo,
-    # desde que a conversa não mencione outro diferente.
-
-    return None

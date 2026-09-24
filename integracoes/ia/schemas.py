@@ -34,19 +34,11 @@ class AnaliseAtendimento(BaseModel):
     ]
 
     resumo: str
-
     veiculo_mencionado: Optional[str]
-
     placa_mencionada: Optional[str]
-
     sintomas_identificados: list[str]
-
     condicoes_do_problema: list[str]
-
     tempo_do_problema: Optional[str]
-
     dados_suficientes: bool
-
     proxima_pergunta: Optional[str]
-
     precisa_humano: bool
