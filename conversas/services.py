@@ -10,7 +10,11 @@ from clientes.services import (
     obter_ou_criar_veiculo,
 )
 from conversas.models import Conversa, Mensagem
+import requests
 
+from integracoes.trello.services import (
+    sincronizar_card_atendimento,
+)
 
 # =========================================================
 # MENSAGENS
@@ -114,6 +118,32 @@ def salvar_mensagem_bot(
         conteudo=resposta,
     )
 
+def sincronizar_trello_com_seguranca(atendimento):
+    """
+    Tenta sincronizar o Atendimento com o Trello.
+
+    Uma falha no Trello não deve impedir o atendimento
+    do cliente nem desfazer os dados salvos no sistema.
+    """
+
+    try:
+        card = sincronizar_card_atendimento(
+            atendimento
+        )
+
+        return {
+            "sucesso": True,
+            "card": card,
+            "erro": None,
+        }
+
+    except (requests.RequestException, ValueError) as erro:
+
+        return {
+            "sucesso": False,
+            "card": None,
+            "erro": str(erro),
+        }
 
 # =========================================================
 # VEÍCULO
@@ -387,6 +417,12 @@ def processar_mensagem_cliente(
         )
 
     mensagem_bot = None
+
+    resultado_trello = {
+    "sucesso": False,
+    "card": None,
+    "erro": None,
+    }
 
     # =====================================================
     # 7. DATA DE AGENDAMENTO INVÁLIDA
@@ -711,6 +747,16 @@ def processar_mensagem_cliente(
         )
 
     # =====================================================
+    # SINCRONIZAR COM TRELLO
+    # =====================================================
+
+    resultado_trello = (
+        sincronizar_trello_com_seguranca(
+            atendimento
+        )
+    )
+    
+    # =====================================================
     # 17. RETORNO
     # =====================================================
 
@@ -722,6 +768,9 @@ def processar_mensagem_cliente(
         "situacao_veiculo": situacao_veiculo,
         "agendamento": agendamento,
         "situacao_agendamento": situacao_agendamento,
+        "trello_sincronizado": resultado_trello["sucesso"],
+        "trello_card": resultado_trello["card"],
+        "trello_erro": resultado_trello["erro"],
     }
 
 
