@@ -1,6 +1,6 @@
 import re
 
-from clientes.models import Veiculo
+from clientes.models import Cliente, Veiculo
 
 
 def normalizar_placa(placa):
@@ -47,6 +47,38 @@ def placa_valida(placa):
         re.match(padrao_antigo, placa)
         or re.match(padrao_mercosul, placa)
     )
+
+def normalizar_telefone(telefone):
+    """
+    Remove caracteres de formatação do telefone.
+
+    Exemplo:
+    (61) 99999-9999 -> 61999999999
+    """
+
+    if not telefone:
+        return ""
+
+    return re.sub(r"\D", "", telefone)
+
+
+def obter_ou_criar_cliente_por_telefone(telefone):
+    """
+    Procura um cliente pelo telefone.
+
+    Se não existir, cria um cliente provisório.
+    """
+
+    telefone = normalizar_telefone(telefone)
+
+    if not telefone:
+        raise ValueError("Telefone não informado.")
+
+    cliente, criado = Cliente.objects.get_or_create(
+        telefone=telefone
+    )
+
+    return cliente, criado
 
 
 def buscar_veiculo_por_placa(placa):
