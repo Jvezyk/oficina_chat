@@ -15,6 +15,7 @@ class Agendamento(models.Model):
         REMARCADO = "remarcado", "Remarcado"
         CANCELADO = "cancelado", "Cancelado"
         CONCLUIDO = "concluido", "Concluído"
+        RECUSADO = "recusado", "Recusado" 
 
     class Periodo(models.TextChoices):
         MANHA = "manha", "Manhã"
@@ -68,6 +69,10 @@ class Agendamento(models.Model):
 
     atualizado_em = models.DateTimeField(
         auto_now=True,
+    )
+
+    observacao_retorno = models.TextField(
+        blank=True,
     )
 
     def __str__(self):
