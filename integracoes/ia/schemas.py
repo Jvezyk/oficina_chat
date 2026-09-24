@@ -43,3 +43,41 @@ class AnaliseAtendimento(BaseModel):
     dados_suficientes: bool
     proxima_pergunta: Optional[str]
     precisa_humano: bool
+
+    # =====================================================
+    # AGENDAMENTO
+    # =====================================================
+
+    tipo_data_agendamento: Optional[
+        Literal[
+            "hoje",
+            "amanha",
+            "depois_amanha",
+            "dia_semana",
+            "data_explicita",
+        ]
+    ]
+
+    dia_semana_agendamento: Optional[
+        Literal[
+            "segunda",
+            "terca",
+            "quarta",
+            "quinta",
+            "sexta",
+            "sabado",
+            "domingo",
+        ]
+    ]
+
+    data_explicita_agendamento: Optional[str]
+
+    horario_agendamento_mencionado: Optional[str]
+
+    periodo_agendamento_mencionado: Optional[
+        Literal[
+            "manha",
+            "tarde",
+            "noite",
+        ]
+    ]

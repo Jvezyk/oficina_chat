@@ -1,13 +1,14 @@
 from django.db import transaction
 
+from agendamentos.services import (
+    processar_solicitacao_agendamento,
+)
 from atendimentos.models import Atendimento
 from atendimentos.services import processar_conversa
-
 from clientes.services import (
     obter_ou_criar_cliente_por_telefone,
     obter_ou_criar_veiculo,
 )
-
 from conversas.models import Conversa, Mensagem
 
 
@@ -44,11 +45,10 @@ def personalizar_resposta(
     Personaliza pequenas partes da resposta do bot.
 
     Regras:
-    - Uma conversa nova recebe uma saudação.
-    - Cliente já conhecido é chamado pelo primeiro nome.
-    - Se o nome acabou de ser informado durante uma conversa
-      existente, usamos "Prazer, Nome!".
-    - Não repete cumprimentos durante a mesma conversa.
+    - Uma nova conversa recebe saudação.
+    - Cliente conhecido é chamado pelo primeiro nome.
+    - Se o nome acabou de ser informado, usa "Prazer, Nome!".
+    - Não repete saudação durante a mesma conversa.
     """
 
     nome = (cliente.nome or "").strip()
@@ -79,16 +79,13 @@ def personalizar_resposta(
     # -----------------------------------------------------
 
     if nome_acabou_de_ser_salvo and nome:
+
         primeiro_nome = nome.split()[0]
 
         return (
             f"Prazer, {primeiro_nome}! 😊 "
             f"{conteudo}"
         )
-
-    # -----------------------------------------------------
-    # Resposta normal
-    # -----------------------------------------------------
 
     return conteudo
 
@@ -134,20 +131,20 @@ def gerar_pergunta_veiculo(cliente, analise):
     )
 
     # -----------------------------------------------------
-    # IA identificou algum veículo na conversa
+    # A IA identificou um veículo
     # -----------------------------------------------------
 
     if analise.veiculo_mencionado:
 
-        # Sabemos o veículo, mas ainda não sabemos a placa
+        # Temos veículo, mas não temos placa
         if not analise.placa_mencionada:
             return (
                 f"Certo, é um {analise.veiculo_mencionado}. "
                 "Pode me informar a placa do veículo?"
             )
 
-        # Temos veículo e placa, mas por algum motivo ele
-        # ainda não foi vinculado ao atendimento.
+        # Temos veículo + placa, mas não foi possível
+        # associar automaticamente.
         return (
             f"Entendi. Você informou um "
             f"{analise.veiculo_mencionado}, "
@@ -156,7 +153,7 @@ def gerar_pergunta_veiculo(cliente, analise):
         )
 
     # -----------------------------------------------------
-    # Cliente não possui veículos cadastrados
+    # Nenhum veículo cadastrado
     # -----------------------------------------------------
 
     if len(veiculos) == 0:
@@ -194,13 +191,6 @@ def gerar_pergunta_veiculo(cliente, analise):
             f"é sobre qual veículo: {lista_veiculos}?"
         )
 
-    # -----------------------------------------------------
-    # Cliente possui apenas um veículo
-    # -----------------------------------------------------
-
-    # Nesse caso, identificar_veiculo() já pode vincular
-    # automaticamente quando for seguro fazer isso.
-
     return None
 
 
@@ -214,7 +204,7 @@ def obter_ou_criar_conversa(
     canal=Conversa.Canal.WHATSAPP,
 ):
     """
-    Procura uma conversa ainda ativa do cliente.
+    Procura uma conversa ativa do cliente.
 
     Conversas ABERTAS ou AGUARDANDO_HUMANO continuam
     sendo utilizadas.
@@ -238,16 +228,8 @@ def obter_ou_criar_conversa(
         .first()
     )
 
-    # -----------------------------------------------------
-    # Existe conversa ativa
-    # -----------------------------------------------------
-
     if conversa:
         return conversa, False
-
-    # -----------------------------------------------------
-    # Não existe conversa ativa
-    # -----------------------------------------------------
 
     conversa = Conversa.objects.create(
         cliente=cliente,
@@ -275,11 +257,12 @@ def processar_mensagem_cliente(
     Fluxo:
 
     1. Salva a mensagem
-    2. Analisa todo o histórico com IA
-    3. Cria ou atualiza Atendimento
-    4. Atualiza nome do cliente
-    5. Identifica ou cadastra veículo
-    6. Decide a próxima resposta
+    2. Analisa o histórico com IA
+    3. Cria/atualiza Atendimento
+    4. Processa intenção de agendamento
+    5. Atualiza nome do cliente
+    6. Identifica ou cadastra veículo
+    7. Decide a próxima resposta
     """
 
     # =====================================================
@@ -300,10 +283,26 @@ def processar_mensagem_cliente(
         conversa
     )
 
+    # =====================================================
+    # 3. AGENDAMENTO
+    # =====================================================
+
+    agendamento = None
+    situacao_agendamento = "nao_solicitado"
+
+    if analise.intencao == "agendar":
+
+        agendamento, situacao_agendamento = (
+            processar_solicitacao_agendamento(
+                atendimento=atendimento,
+                analise=analise,
+            )
+        )
+
     cliente = conversa.cliente
 
     # =====================================================
-    # 3. NOME DO CLIENTE
+    # 4. NOME DO CLIENTE
     # =====================================================
 
     nome_acabou_de_ser_salvo = False
@@ -347,7 +346,7 @@ def processar_mensagem_cliente(
         )
 
     # =====================================================
-    # 4. IDENTIFICAR OU CADASTRAR VEÍCULO
+    # 5. IDENTIFICAR OU CADASTRAR VEÍCULO
     # =====================================================
 
     situacao_veiculo = None
@@ -373,7 +372,7 @@ def processar_mensagem_cliente(
             )
 
     # =====================================================
-    # 5. VERIFICAR SE AINDA FALTA VEÍCULO
+    # 6. VERIFICAR SE AINDA FALTA VEÍCULO
     # =====================================================
 
     pergunta_veiculo = None
@@ -390,10 +389,101 @@ def processar_mensagem_cliente(
     mensagem_bot = None
 
     # =====================================================
-    # 6. PLACA INVÁLIDA
+    # 7. DATA DE AGENDAMENTO INVÁLIDA
     # =====================================================
 
-    if situacao_veiculo == "placa_invalida":
+    if situacao_agendamento == "data_invalida":
+
+        atendimento.status = (
+            Atendimento.Status.COLETANDO_DADOS
+        )
+
+        atendimento.save(
+            update_fields=[
+                "status",
+                "atualizado_em",
+            ]
+        )
+
+        mensagem_bot = salvar_mensagem_bot(
+            conversa=conversa,
+            cliente=cliente,
+            conteudo=(
+                "Não consegui entender bem a data. "
+                "Pode me informar novamente o dia em que "
+                "você gostaria de trazer o veículo?"
+            ),
+            nome_acabou_de_ser_salvo=(
+                nome_acabou_de_ser_salvo
+            ),
+            nova_conversa=nova_conversa,
+        )
+
+    # =====================================================
+    # 8. DATA NO PASSADO
+    # =====================================================
+
+    elif situacao_agendamento == "data_passada":
+
+        atendimento.status = (
+            Atendimento.Status.COLETANDO_DADOS
+        )
+
+        atendimento.save(
+            update_fields=[
+                "status",
+                "atualizado_em",
+            ]
+        )
+
+        mensagem_bot = salvar_mensagem_bot(
+            conversa=conversa,
+            cliente=cliente,
+            conteudo=(
+                "Essa data já passou. "
+                "Qual outra data você prefere?"
+            ),
+            nome_acabou_de_ser_salvo=(
+                nome_acabou_de_ser_salvo
+            ),
+            nova_conversa=nova_conversa,
+        )
+
+    # =====================================================
+    # 9. HORÁRIO INVÁLIDO
+    # =====================================================
+
+    elif situacao_agendamento == "horario_invalido":
+
+        atendimento.status = (
+            Atendimento.Status.COLETANDO_DADOS
+        )
+
+        atendimento.save(
+            update_fields=[
+                "status",
+                "atualizado_em",
+            ]
+        )
+
+        mensagem_bot = salvar_mensagem_bot(
+            conversa=conversa,
+            cliente=cliente,
+            conteudo=(
+                "Não consegui entender bem o horário. "
+                "Pode me informar novamente?"
+            ),
+            nome_acabou_de_ser_salvo=(
+                nome_acabou_de_ser_salvo
+            ),
+            nova_conversa=nova_conversa,
+        )
+
+    # =====================================================
+    # 10. PLACA INVÁLIDA
+    # =====================================================
+
+    elif situacao_veiculo == "placa_invalida":
 
         atendimento.status = (
             Atendimento.Status.COLETANDO_DADOS
@@ -420,7 +510,7 @@ def processar_mensagem_cliente(
         )
 
     # =====================================================
-    # 7. CONFLITO DE PLACA
+    # 11. CONFLITO DE PLACA
     # =====================================================
 
     elif situacao_veiculo == "conflito":
@@ -463,7 +553,7 @@ def processar_mensagem_cliente(
         )
 
     # =====================================================
-    # 8. PRECISA DE ATENDIMENTO HUMANO
+    # 12. PRECISA DE HUMANO
     # =====================================================
 
     elif analise.precisa_humano:
@@ -505,7 +595,7 @@ def processar_mensagem_cliente(
         )
 
     # =====================================================
-    # 9. FALTA NOME
+    # 13. FALTA NOME
     # =====================================================
 
     elif pergunta_nome:
@@ -532,7 +622,7 @@ def processar_mensagem_cliente(
         )
 
     # =====================================================
-    # 10. FALTA VEÍCULO
+    # 14. FALTA VEÍCULO
     # =====================================================
 
     elif pergunta_veiculo:
@@ -559,7 +649,7 @@ def processar_mensagem_cliente(
         )
 
     # =====================================================
-    # 11. FALTAM DADOS TÉCNICOS
+    # 15. FALTAM DADOS TÉCNICOS
     # =====================================================
 
     elif not analise.dados_suficientes:
@@ -590,7 +680,7 @@ def processar_mensagem_cliente(
             )
 
     # =====================================================
-    # 12. TRIAGEM CONCLUÍDA
+    # 16. TRIAGEM CONCLUÍDA
     # =====================================================
 
     else:
@@ -621,7 +711,7 @@ def processar_mensagem_cliente(
         )
 
     # =====================================================
-    # 13. RETORNO
+    # 17. RETORNO
     # =====================================================
 
     return {
@@ -630,6 +720,8 @@ def processar_mensagem_cliente(
         "mensagem_cliente": mensagem_cliente,
         "mensagem_bot": mensagem_bot,
         "situacao_veiculo": situacao_veiculo,
+        "agendamento": agendamento,
+        "situacao_agendamento": situacao_agendamento,
     }
 
 
@@ -646,7 +738,8 @@ def receber_mensagem(
     """
     Ponto de entrada para mensagens externas.
 
-    Futuramente o webhook do WhatsApp chamará essa função.
+    Futuramente o webhook do WhatsApp poderá chamar
+    esta função diretamente.
 
     Responsabilidades:
 
@@ -677,7 +770,7 @@ def receber_mensagem(
     )
 
     # =====================================================
-    # 3. CONVERSA ESTÁ COM ATENDIMENTO HUMANO
+    # 3. CONVERSA ESTÁ COM HUMANO
     # =====================================================
 
     if (
@@ -701,19 +794,22 @@ def receber_mensagem(
             "atendimento": None,
             "analise": None,
             "situacao_veiculo": None,
+            "agendamento": None,
+            "situacao_agendamento": (
+                "nao_solicitado"
+            ),
         }
 
     # =====================================================
-    # 4. MOTOR NORMAL DA CONVERSA
+    # 4. MOTOR NORMAL
     # =====================================================
 
     resultado = processar_mensagem_cliente(
         conversa=conversa,
         conteudo=conteudo,
 
-        # Esse é o ponto importante:
-        # só haverá saudação se esta conversa acabou
-        # de ser criada.
+        # Só haverá saudação se uma nova conversa
+        # acabou de ser criada.
         nova_conversa=conversa_criada,
     )
 
