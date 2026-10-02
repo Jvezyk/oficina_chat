@@ -115,5 +115,16 @@ class Atendimento(models.Model):
         auto_now=True,
     )
 
+    trello_card_id = models.CharField(
+        max_length=100,
+        null=True,
+        blank=True,
+        unique=True,
+    )
+
+    trello_card_url = models.URLField(
+        blank=True,
+    )
+
     def __str__(self):
         return f"Atendimento #{self.id} - {self.cliente}"

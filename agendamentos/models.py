@@ -75,6 +75,12 @@ class Agendamento(models.Model):
         blank=True,
     )
 
+    ultimo_status_retorno_gerado = models.CharField(
+        max_length=30,
+        blank=True,
+        default="",
+    )       
+
     def __str__(self):
         return (
             f"Agendamento #{self.id} - "
