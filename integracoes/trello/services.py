@@ -1,5 +1,14 @@
 import os
 from atendimentos.models import Atendimento
+from agendamentos.services import (
+    confirmar_agendamento_pelo_trello,
+    recusar_agendamento_pelo_trello,
+)
+from agendamentos.services import (
+    confirmar_agendamento_pelo_trello,
+    recusar_agendamento_pelo_trello,
+    gerar_retorno_agendamento_para_cliente,
+)
 import requests
 
 
@@ -11,6 +20,304 @@ LABELS_GERENCIADOS = (
     "AGENDAMENTO:",
 )
 
+STATUS_POR_LISTA_TRELLO = {
+
+    "AGUARDANDO OFICINA": (
+        Atendimento.Status.AGUARDANDO_OFICINA
+    ),
+
+    "EM ANDAMENTO": (
+        Atendimento.Status.EM_ANDAMENTO
+    ),
+
+}
+
+
+def obter_lista_do_card(card_id):
+    """
+    Consulta no Trello em qual lista
+    determinado card está.
+    """
+
+    api_key, token = obter_credenciais()
+
+    resposta = requests.get(
+        f"{BASE_URL}/cards/{card_id}/list",
+        params={
+            "key": api_key,
+            "token": token,
+            "fields": "id,name",
+        },
+        timeout=15,
+    )
+
+    resposta.raise_for_status()
+
+    return resposta.json()
+
+
+def sincronizar_status_trello_para_django(
+    atendimento,
+):
+    """
+    Consulta a lista atual do card no Trello
+    e atualiza o status do Atendimento no Django.
+
+    O PostgreSQL mantém estados internos mais
+    específicos do que as listas do Trello.
+    """
+
+    # =====================================================
+    # VERIFICAR SE EXISTE CARD
+    # =====================================================
+
+    if not atendimento.trello_card_id:
+        return {
+            "alterado": False,
+            "motivo": "sem_card",
+        }
+
+    # =====================================================
+    # DESCOBRIR LISTA ATUAL DO CARD
+    # =====================================================
+
+    lista = obter_lista_do_card(
+        atendimento.trello_card_id
+    )
+
+    nome_lista = (
+        lista["name"]
+        .strip()
+        .upper()
+    )
+
+    # =====================================================
+    # NOVOS
+    # =====================================================
+
+    if nome_lista == "NOVOS":
+
+        status_compativeis = {
+            Atendimento.Status.NOVO,
+            Atendimento.Status.COLETANDO_DADOS,
+            Atendimento.Status.AGUARDANDO_CLIENTE,
+        }
+
+        # Se o status interno já pertence à etapa NOVOS,
+        # preservamos a informação mais específica.
+        if atendimento.status in status_compativeis:
+
+            return {
+                "alterado": False,
+                "motivo": "status_interno_preservado",
+                "lista": nome_lista,
+                "status": atendimento.status,
+            }
+
+        # Se um funcionário moveu um card de outra etapa
+        # de volta para NOVOS, consideramos retorno ao início.
+        status_anterior = atendimento.status
+
+        atendimento.status = (
+            Atendimento.Status.NOVO
+        )
+
+        atendimento.save(
+            update_fields=[
+                "status",
+                "atualizado_em",
+            ]
+        )
+
+        return {
+            "alterado": True,
+            "lista": nome_lista,
+            "status_anterior": status_anterior,
+            "status_novo": Atendimento.Status.NOVO,
+        }
+
+    # =====================================================
+    # AGENDADOS
+    # =====================================================
+
+    if nome_lista == "AGENDADOS":
+
+        resultado = (
+            confirmar_agendamento_pelo_trello(
+                atendimento
+            )
+        )
+
+        if not resultado["sucesso"]:
+
+            return {
+                "alterado": False,
+                "motivo": resultado["motivo"],
+                "lista": nome_lista,
+            }
+
+        retorno_cliente = (
+            gerar_retorno_agendamento_para_cliente(
+                resultado["agendamento"]
+            )
+        )
+
+        sincronizar_card_atendimento(
+            atendimento
+        )
+
+        return {
+            "alterado": True,
+            "motivo": "agendamento_confirmado",
+            "lista": nome_lista,
+            "status_anterior": (
+                resultado["status_anterior"]
+            ),
+            "status_novo": (
+                resultado["status_novo"]
+            ),
+            "retorno_cliente": retorno_cliente,
+    }
+
+    # =====================================================
+    # REAGENDAR
+    # =====================================================
+
+   if nome_lista == "REAGENDAR":
+
+        resultado = (
+            recusar_agendamento_pelo_trello(
+                atendimento
+            )
+        )
+
+        if not resultado["sucesso"]:
+
+            return {
+                "alterado": False,
+                "motivo": resultado["motivo"],
+                "lista": nome_lista,
+            }
+
+        retorno_cliente = (
+            gerar_retorno_agendamento_para_cliente(
+                resultado["agendamento"]
+            )
+        )
+
+        sincronizar_card_atendimento(
+            atendimento
+        )
+
+        return {
+            "alterado": True,
+            "motivo": "agendamento_recusado",
+            "lista": nome_lista,
+            "status_anterior": (
+                resultado["status_anterior"]
+            ),
+            "status_novo": (
+                resultado["status_novo"]
+            ),
+            "retorno_cliente": retorno_cliente,
+    }
+
+    # =====================================================
+    # FINALIZADOS
+    # =====================================================
+
+    if nome_lista == "FINALIZADOS":
+
+        status_compativeis = {
+            Atendimento.Status.FINALIZADO,
+            Atendimento.Status.CANCELADO,
+        }
+
+        # Se já está finalizado ou cancelado,
+        # não perdemos essa distinção.
+        if atendimento.status in status_compativeis:
+
+            return {
+                "alterado": False,
+                "motivo": "status_interno_preservado",
+                "lista": nome_lista,
+                "status": atendimento.status,
+            }
+
+        status_anterior = atendimento.status
+
+        atendimento.status = (
+            Atendimento.Status.FINALIZADO
+        )
+
+        atendimento.save(
+            update_fields=[
+                "status",
+                "atualizado_em",
+            ]
+        )
+
+        return {
+            "alterado": True,
+            "lista": nome_lista,
+            "status_anterior": status_anterior,
+            "status_novo": (
+                Atendimento.Status.FINALIZADO
+            ),
+        }
+
+    # =====================================================
+    # OUTRAS LISTAS COM RELAÇÃO DIRETA
+    # =====================================================
+
+    novo_status = (
+        STATUS_POR_LISTA_TRELLO.get(
+            nome_lista
+        )
+    )
+
+    if novo_status is None:
+
+        return {
+            "alterado": False,
+            "motivo": "lista_desconhecida",
+            "lista": nome_lista,
+        }
+
+    # =====================================================
+    # JÁ ESTÁ SINCRONIZADO
+    # =====================================================
+
+    if atendimento.status == novo_status:
+
+        return {
+            "alterado": False,
+            "motivo": "status_ja_sincronizado",
+            "lista": nome_lista,
+            "status": novo_status,
+        }
+
+    # =====================================================
+    # ATUALIZAR DJANGO
+    # =====================================================
+
+    status_anterior = atendimento.status
+
+    atendimento.status = novo_status
+
+    atendimento.save(
+        update_fields=[
+            "status",
+            "atualizado_em",
+        ]
+    )
+
+    return {
+        "alterado": True,
+        "lista": nome_lista,
+        "status_anterior": status_anterior,
+        "status_novo": novo_status,
+    }
 
 def listar_labels_do_quadro(board_id):
     api_key, token = obter_credenciais()
@@ -189,6 +496,15 @@ def obter_labels_desejados(atendimento):
                         "AGENDAMENTO: REMARCADO"
                     ),
                     "cor": "purple",
+                }
+            )
+        elif agendamento.status == "recusado":
+            labels.append(
+                {
+                    "nome": (
+                        "AGENDAMENTO: RECUSADO"
+                    ),
+                    "cor": "red",
                 }
             )
 

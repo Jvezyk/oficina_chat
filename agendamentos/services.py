@@ -1,7 +1,5 @@
 from datetime import datetime, timedelta
-
 from django.utils import timezone
-
 from agendamentos.models import Agendamento
 
 
@@ -355,3 +353,308 @@ def processar_solicitacao_agendamento(
         return agendamento, "atualizado"
 
     return agendamento, "existente"
+
+def buscar_agendamento_pendente(atendimento):
+    """
+    Retorna o agendamento mais recente que ainda
+    pode ser aceito ou recusado pela oficina.
+    """
+
+    return (
+        atendimento.agendamentos
+        .filter(
+            status__in=[
+                Agendamento.Status.SOLICITADO,
+                Agendamento.Status.AGUARDANDO_CONFIRMACAO,
+                Agendamento.Status.REMARCADO,
+            ]
+        )
+        .order_by("-criado_em")
+        .first()
+    )
+
+
+def confirmar_agendamento_pelo_trello(
+    atendimento,
+):
+    """
+    Confirma o horário solicitado pelo cliente.
+
+    Só confirma quando existe data E horário exatos.
+    """
+
+    agendamento = buscar_agendamento_pendente(
+        atendimento
+    )
+
+    if not agendamento:
+        return {
+            "sucesso": False,
+            "motivo": "sem_agendamento_pendente",
+        }
+
+    if not agendamento.data_solicitada:
+        return {
+            "sucesso": False,
+            "motivo": "sem_data",
+            "agendamento": agendamento,
+        }
+
+    if not agendamento.horario_solicitado:
+        return {
+            "sucesso": False,
+            "motivo": "sem_horario_exato",
+            "agendamento": agendamento,
+        }
+
+    data_hora = datetime.combine(
+        agendamento.data_solicitada,
+        agendamento.horario_solicitado,
+    )
+
+    data_hora = timezone.make_aware(
+        data_hora,
+        timezone.get_current_timezone(),
+    )
+
+    agendamento.data_hora_confirmada = data_hora
+
+    agendamento.status = (
+        Agendamento.Status.CONFIRMADO
+    )
+
+    agendamento.observacao_retorno = (
+        "Horário confirmado pela oficina."
+    )
+
+    agendamento.save(
+        update_fields=[
+            "data_hora_confirmada",
+            "status",
+            "observacao_retorno",
+            "atualizado_em",
+        ]
+    )
+
+    status_anterior = atendimento.status
+
+    atendimento.status = (
+        atendimento.Status.AGENDADO
+    )
+
+    atendimento.save(
+        update_fields=[
+            "status",
+            "atualizado_em",
+        ]
+    )
+
+    return {
+        "sucesso": True,
+        "motivo": "agendamento_confirmado",
+        "agendamento": agendamento,
+        "status_anterior": status_anterior,
+        "status_novo": atendimento.status,
+    }
+
+
+def recusar_agendamento_pelo_trello(
+    atendimento,
+):
+    """
+    Registra que a oficina não aceitou
+    o horário solicitado.
+    """
+
+    agendamento = buscar_agendamento_pendente(
+        atendimento
+    )
+
+    if not agendamento:
+        return {
+            "sucesso": False,
+            "motivo": "sem_agendamento_pendente",
+        }
+
+    agendamento.status = (
+        Agendamento.Status.RECUSADO
+    )
+
+    agendamento.data_hora_confirmada = None
+
+    agendamento.observacao_retorno = (
+        "Horário solicitado não confirmado "
+        "pela oficina. É necessário escolher "
+        "uma nova opção."
+    )
+
+    agendamento.save(
+        update_fields=[
+            "status",
+            "data_hora_confirmada",
+            "observacao_retorno",
+            "atualizado_em",
+        ]
+    )
+
+    status_anterior = atendimento.status
+
+    atendimento.status = (
+        atendimento.Status.AGUARDANDO_OFICINA
+    )
+
+    atendimento.save(
+        update_fields=[
+            "status",
+            "atualizado_em",
+        ]
+    )
+
+    return {
+        "sucesso": True,
+        "motivo": "agendamento_recusado",
+        "agendamento": agendamento,
+        "status_anterior": status_anterior,
+        "status_novo": atendimento.status,
+    }
+
+def gerar_retorno_agendamento_para_cliente(
+    agendamento,
+):
+    """
+    Gera uma mensagem interna de retorno para o cliente
+    quando um agendamento é confirmado ou recusado.
+
+    Ainda não envia para o WhatsApp.
+    Apenas registra a mensagem no sistema.
+    """
+
+    from conversas.models import Mensagem
+
+    atendimento = agendamento.atendimento
+    conversa = atendimento.conversa
+
+    # =====================================================
+    # PRECISAMOS SABER EM QUAL CONVERSA RESPONDER
+    # =====================================================
+
+    if not conversa:
+        return {
+            "gerado": False,
+            "motivo": "sem_conversa",
+            "mensagem": None,
+        }
+
+    # =====================================================
+    # APENAS CONFIRMADO OU RECUSADO GERAM RETORNO
+    # =====================================================
+
+    status_permitidos = {
+        Agendamento.Status.CONFIRMADO,
+        Agendamento.Status.RECUSADO,
+    }
+
+    if agendamento.status not in status_permitidos:
+        return {
+            "gerado": False,
+            "motivo": "status_sem_retorno",
+            "mensagem": None,
+        }
+
+    # =====================================================
+    # EVITAR DUPLICAÇÃO
+    # =====================================================
+
+    if (
+        agendamento.ultimo_status_retorno_gerado
+        == agendamento.status
+    ):
+        return {
+            "gerado": False,
+            "motivo": "retorno_ja_gerado",
+            "mensagem": None,
+        }
+
+    # =====================================================
+    # AGENDAMENTO CONFIRMADO
+    # =====================================================
+
+    if (
+        agendamento.status
+        == Agendamento.Status.CONFIRMADO
+    ):
+
+        if not agendamento.data_hora_confirmada:
+            return {
+                "gerado": False,
+                "motivo": "sem_data_hora_confirmada",
+                "mensagem": None,
+            }
+
+        data_hora = timezone.localtime(
+            agendamento.data_hora_confirmada
+        )
+
+        data_formatada = (
+            data_hora.strftime("%d/%m/%Y")
+        )
+
+        horario_formatado = (
+            data_hora.strftime("%H:%M")
+        )
+
+        conteudo = (
+            f"Seu agendamento foi confirmado para "
+            f"{data_formatada} às {horario_formatado}. 👍"
+        )
+
+    # =====================================================
+    # AGENDAMENTO RECUSADO
+    # =====================================================
+
+    else:
+
+        conteudo = (
+            "O horário solicitado não pôde ser "
+            "confirmado pela oficina. "
+            "Você pode me informar outra data "
+            "ou horário de preferência?"
+        )
+
+    # =====================================================
+    # SALVAR MENSAGEM
+    # =====================================================
+
+    mensagem = Mensagem.objects.create(
+        conversa=conversa,
+        remetente=Mensagem.Remetente.BOT,
+        tipo=Mensagem.Tipo.TEXTO,
+        conteudo=conteudo,
+        dados_extras={
+            "origem": "agendamento_trello",
+            "agendamento_id": agendamento.id,
+            "evento": agendamento.status,
+        },
+        processada_por_ia=False,
+    )
+
+    # =====================================================
+    # MARCAR RETORNO COMO GERADO
+    # =====================================================
+
+    agendamento.ultimo_status_retorno_gerado = (
+        agendamento.status
+    )
+
+    agendamento.save(
+        update_fields=[
+            "ultimo_status_retorno_gerado",
+            "atualizado_em",
+        ]
+    )
+
+    return {
+        "gerado": True,
+        "motivo": "retorno_gerado",
+        "mensagem": mensagem,
+    }
